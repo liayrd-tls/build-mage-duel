@@ -1,0 +1,486 @@
+#!/bin/bash
+
+# Config file path
+CONFIG_FILE="$HOME/.config/build-mage-duel/config"
+
+# colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# function to print colored output
+print_status() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Variable to track if script was launched from rofi
+LAUNCHED_FROM_ROFI=false
+
+# Check if script is running in terminal
+if [ ! -t 0 ]; then
+    LAUNCHED_FROM_ROFI=true
+    # Try to find available terminal emulator
+    if command -v alacritty >/dev/null 2>&1; then
+        exec alacritty -e "$0" "$@"
+    elif command -v kitty >/dev/null 2>&1; then
+        exec kitty -e "$0" "$@"
+    elif command -v gnome-terminal >/dev/null 2>&1; then
+        exec gnome-terminal -- "$0" "$@"
+    elif command -v xterm >/dev/null 2>&1; then
+        exec xterm -e "$0" "$@"
+    else
+        notify-send -u critical "Build Mage Duel" "Не знайдено жодного терміналу. Встановіть alacritty, kitty, gnome-terminal або xterm"
+        exit 1
+    fi
+fi
+
+# Default values (will be overridden by config if it exists)
+DEF_UNITY_EDITOR_PATH="~/Unity/Hub/Editor/6000.1.3f1/Editor/Unity"
+DEF_BUILD_PATH="~/UnityProjects/Territory-Wars"
+DEF_OUTPUT_PATH="~/Builds"
+DEF_BUILD_NAME="mageduel-webgl"
+DEF_BASE_VERSION="1.0"
+DEF_START_ITERATION_VERSION=1
+
+# Load config if exists
+if [ -f "$CONFIG_FILE" ]; then
+    print_status "Завантажую конфігурацію з $CONFIG_FILE"
+    source "$CONFIG_FILE"
+    
+    # Override defaults with config values if they exist
+    DEF_UNITY_EDITOR_PATH="${UNITY_EDITOR_PATH:-$DEF_UNITY_EDITOR_PATH}"
+    DEF_BUILD_PATH="${BUILD_PATH:-$DEF_BUILD_PATH}"
+    DEF_OUTPUT_PATH="${OUTPUT_PATH:-$DEF_OUTPUT_PATH}"
+    DEF_BUILD_NAME="${BUILD_NAME:-$DEF_BUILD_NAME}"
+    BASE_VERSION="${BASE_VERSION:-$DEF_BASE_VERSION}"
+    START_ITERATION_VERSION="${START_ITERATION_VERSION:-$DEF_START_ITERATION_VERSION}"
+else
+    print_warning "Конфіг файл не знайдено за шляхом: $CONFIG_FILE"
+    print_warning "Використовую значення за замовчуванням"
+fi
+
+# function to check if Unity Editor exists
+check_unity_editor() {
+    local unity_path=$(eval echo $DEF_UNITY_EDITOR_PATH)
+    if [ ! -f "$unity_path" ]; then
+        print_error "Unity Editor не знайдено за шляхом: $unity_path"
+        print_error "Перевірте шлях до Unity Editor або встановіть Unity Hub"
+        exit 1
+    fi
+    print_success "Unity Editor знайдено: $unity_path"
+}
+
+# function to check if project exists
+check_project() {
+    local project_path=$(eval echo $DEF_BUILD_PATH)
+    if [ ! -d "$project_path" ]; then
+        print_error "Проект не знайдено за шляхом: $project_path"
+        exit 1
+    fi
+    print_success "Проект знайдено: $project_path"
+}
+
+# function to create output directory
+create_output_dir() {
+    local output_path=$(eval echo $DEF_OUTPUT_PATH)
+    if [ ! -d "$output_path" ]; then
+        print_status "Створюю директорію для білду: $output_path"
+        mkdir -p "$output_path"
+    fi
+}
+
+# function to update version in config
+update_version_in_config() {
+    local new_iteration=$((START_ITERATION_VERSION + 1))
+    local temp_file=$(mktemp)
+    
+    print_status "Оновлюю версію до $BASE_VERSION.$new_iteration"
+    
+    # Read config file and update version
+    while IFS= read -r line; do
+        if [[ $line =~ ^START_ITERATION_VERSION= ]]; then
+            echo "START_ITERATION_VERSION=$new_iteration"
+        else
+            echo "$line"
+        fi
+    done < "$CONFIG_FILE" > "$temp_file"
+    
+    # Save changes back to config
+    mv "$temp_file" "$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
+    
+    # Update current version
+    START_ITERATION_VERSION=$new_iteration
+    print_success "Версію оновлено: $BASE_VERSION.$START_ITERATION_VERSION"
+}
+
+# function to build WebGL
+build_webgl() {
+    local unity_path=$(eval echo $DEF_UNITY_EDITOR_PATH)
+    local project_path=$(eval echo $DEF_BUILD_PATH)
+    local output_path=$(eval echo $DEF_OUTPUT_PATH)
+    local build_name=$DEF_BUILD_NAME
+    local current_version="$BASE_VERSION.$START_ITERATION_VERSION"
+    
+    local full_output_path="$output_path/$build_name-$current_version"
+    
+    print_status "Починаю створення WebGL білду..."
+    print_status "Проект: $project_path"
+    print_status "Вихідна директорія: $full_output_path"
+    print_status "Версія білду: $current_version"
+    print_status "Використовую налаштування з Player Settings"
+    
+    # Unity command for WebGL build using Player Settings
+    "$unity_path" \
+        -batchmode \
+        -nographics \
+        -quit \
+        -projectPath "$project_path" \
+        -buildTarget WebGL \
+        -executeMethod WebGLBuilder.BuildWebGL \
+        -logFile "$output_path/build.log" \
+        -customArgs "buildName=$DEF_BUILD_NAME-$current_version;version=$current_version;outputPath=$DEF_OUTPUT_PATH"
+    
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
+        print_success "WebGL білд успішно створено!"
+        print_success "Файли знаходяться в: $full_output_path"
+        print_success "Лог білду: $output_path/build.log"
+        
+        # Check if build files were actually created
+        if [ -f "$full_output_path/index.html" ]; then
+            print_success "WebGL файли створено успішно"
+            # Update version only if build was successful and files exist
+            update_version_in_config
+            
+            # Send success notification
+            notify-send -u normal "Build Mage Duel" "Білд $current_version успішно створено!\nШлях: $full_output_path"
+            
+            # If launched from rofi, exit terminal after 3 seconds
+            if [ "$LAUNCHED_FROM_ROFI" = true ]; then
+                print_status "Термінал закриється через 3 секунди..."
+                sleep 3
+                kill -9 $PPID
+            fi
+        else
+            print_warning "WebGL файли не знайдено. Перевірте налаштування Player Settings"
+            notify-send -u critical "Build Mage Duel" "Помилка: WebGL файли не знайдено.\nПеревірте налаштування Player Settings"
+        fi
+    else
+        print_error "Помилка при створенні білду (код виходу: $exit_code)"
+        print_error "Перевірте лог файл: $output_path/build.log"
+        notify-send -u critical "Build Mage Duel" "Помилка при створенні білду!\nКод помилки: $exit_code\nЛог: $output_path/build.log"
+        exit $exit_code
+    fi
+}
+
+# function to check Player Settings
+check_player_settings() {
+    local project_path=$(eval echo $DEF_BUILD_PATH)
+    local project_settings="$project_path/ProjectSettings/ProjectSettings.asset"
+    
+    if [ ! -f "$project_settings" ]; then
+        print_warning "Файл налаштувань проекту не знайдено"
+        return
+    fi
+    
+    print_status "Перевіряю налаштування Player Settings..."
+    
+    # Check if WebGL is configured in project settings
+    if grep -q "WebGL" "$project_settings"; then
+        print_success "WebGL налаштування знайдено в Player Settings"
+    else
+        print_warning "WebGL налаштування не знайдено в Player Settings"
+        print_warning "Переконайтеся, що WebGL платформа налаштована в Unity Editor"
+    fi
+}
+
+# function to show Player Settings info
+show_player_settings_info() {
+    echo ""
+    echo "Для налаштування Player Settings в Unity Editor:"
+    echo "1. Відкрийте проект в Unity Editor"
+    echo "2. Перейдіть до Edit > Project Settings > Player"
+    echo "3. У розділі 'Other Settings' переконайтеся що:"
+    echo "   - Scripting Backend: IL2CPP"
+    echo "   - Api Compatibility Level: .NET Standard 2.1"
+    echo "4. У розділі 'Publishing Settings' налаштуйте:"
+    echo "   - Compression Format: Disabled або Gzip"
+    echo "   - Data Caching: Enabled"
+    echo "5. У розділі 'Resolution and Presentation':"
+    echo "   - WebGL Template: Default або ваш кастомний"
+    echo ""
+}
+
+# function to update config value
+update_config_value() {
+    local key=$1
+    local value=$2
+    local temp_file=$(mktemp)
+    local updated=false
+    
+    # Read config file and update specified key
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ $line =~ ^[^#]*$key= ]]; then
+            echo "$key=\"$value\""
+            updated=true
+        else
+            echo "$line"
+        fi
+    done < "$CONFIG_FILE" > "$temp_file"
+    
+    # If key wasn't found, add it
+    if [ "$updated" = false ]; then
+        echo "$key=\"$value\"" >> "$temp_file"
+    fi
+    
+    # Save changes back to config
+    mv "$temp_file" "$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
+    print_success "Оновлено $key=\"$value\" в конфігу"
+}
+
+# function to show config
+show_config() {
+    echo "Поточна конфігурація:"
+    echo "--------------------"
+    echo "UNITY_EDITOR_PATH=\"$DEF_UNITY_EDITOR_PATH\""
+    echo "BUILD_PATH=\"$DEF_BUILD_PATH\""
+    echo "OUTPUT_PATH=\"$DEF_OUTPUT_PATH\""
+    echo "BUILD_NAME=\"$DEF_BUILD_NAME\""
+    echo "BASE_VERSION=\"$BASE_VERSION\""
+    echo "START_ITERATION_VERSION=$START_ITERATION_VERSION"
+    echo "--------------------"
+}
+
+# function to create initial config
+create_config() {
+    local config_dir="$HOME/.config/build-mage-duel"
+    
+    # Create config directory if it doesn't exist
+    if [ ! -d "$config_dir" ]; then
+        mkdir -p "$config_dir"
+        chmod 755 "$config_dir"
+    fi
+    
+    # Create config file with comments and placeholders
+    cat > "$CONFIG_FILE" << EOL
+# Unity editor path (приклад: ~/Unity/Hub/Editor/2020.3.1f1/Editor/Unity)
+UNITY_EDITOR_PATH=""
+
+# Build path (шлях до вашого Unity проекту)
+BUILD_PATH=""
+
+# Output path (куди зберігати білди)
+OUTPUT_PATH=""
+
+# Build name (назва вихідної директорії)
+BUILD_NAME=""
+
+# Version info
+BASE_VERSION=""
+START_ITERATION_VERSION=1
+EOL
+    
+    chmod 644 "$CONFIG_FILE"
+    print_success "Створено шаблон конфігураційного файлу: $CONFIG_FILE"
+    print_status "Відкрийте його в текстовому редакторі та заповніть необхідні значення"
+    print_status "Наприклад:"
+    print_status "UNITY_EDITOR_PATH=\"~/Unity/Hub/Editor/6000.1.3f1/Editor/Unity\""
+    print_status "BUILD_PATH=\"~/UnityProjects/Territory-Wars\""
+    print_status "OUTPUT_PATH=\"~/Builds\""
+    print_status "BUILD_NAME=\"mageduel-webgl\""
+    print_status "BASE_VERSION=\"1.4\""
+}
+
+# function to show usage
+show_usage() {
+    echo "Використання: $0 [опції]"
+    echo ""
+    echo "Опції:"
+    echo "  -h, --help              Показати цю довідку"
+    echo "  -c, --clean             Очистити попередній білд перед створенням нового"
+    echo "  -v, --verbose           Детальний вивід"
+    echo "  -s, --settings          Показати інформацію про налаштування Player Settings"
+    echo "  --show-config           Показати поточну конфігурацію"
+    echo "  --init                  Створити початковий конфіг файл"
+    echo ""
+    echo "Опції конфігурації:"
+    echo "  --unity-path <шлях>     Встановити шлях до Unity Editor"
+    echo "  --build-path <шлях>     Встановити шлях до проекту"
+    echo "  --output-path <шлях>    Встановити шлях для вихідних файлів"
+    echo "  --build-name <назва>    Встановити назву білду"
+    echo "  --base-version <версія> Встановити базову версію (наприклад, 1.4)"
+    echo "  --iteration <число>     Встановити номер ітерації"
+    echo ""
+    echo "Приклади:"
+    echo "  $0 --init              # Створити початковий конфіг"
+    echo "  $0                     # Створити білд"
+    echo "  $0 --clean             # Очистити та створити новий білд"
+    echo "  $0 --settings          # Показати інформацію про налаштування"
+    echo "  $0 --show-config       # Показати поточну конфігурацію"
+    echo ""
+    echo "Примітка: Перед першим використанням створіть конфіг командою '$0 --init'"
+}
+
+# function to clean previous build
+clean_build() {
+    local output_path=$(eval echo $DEF_OUTPUT_PATH)
+    local build_name=$DEF_BUILD_NAME
+    local full_output_path="$output_path/$build_name"
+    
+    if [ -d "$full_output_path" ]; then
+        print_status "Видаляю попередній білд: $full_output_path"
+        rm -rf "$full_output_path"
+        print_success "Попередній білд видалено"
+    else
+        print_warning "Попередній білд не знайдено для очищення"
+    fi
+}
+
+# main script
+main() {
+    local clean_build_flag=false
+    local verbose_flag=false
+    local settings_flag=false
+    local show_config_flag=false
+    
+    # parse command line arguments first
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            --init)
+                create_config
+                print_success "Конфігураційний файл створено!"
+                print_status "Тепер відредагуйте файл: $CONFIG_FILE"
+                print_status "та заповніть всі необхідні параметри"
+                exit 0
+                ;;
+            -c|--clean)
+                clean_build_flag=true
+                shift
+                ;;
+            -v|--verbose)
+                verbose_flag=true
+                shift
+                ;;
+            -s|--settings)
+                settings_flag=true
+                shift
+                ;;
+            --show-config)
+                show_config_flag=true
+                shift
+                ;;
+            --unity-path)
+                update_config_value "UNITY_EDITOR_PATH" "$2"
+                source "$CONFIG_FILE"
+                shift 2
+                ;;
+            --build-path)
+                update_config_value "BUILD_PATH" "$2"
+                source "$CONFIG_FILE"
+                shift 2
+                ;;
+            --output-path)
+                update_config_value "OUTPUT_PATH" "$2"
+                source "$CONFIG_FILE"
+                shift 2
+                ;;
+            --build-name)
+                update_config_value "BUILD_NAME" "$2"
+                source "$CONFIG_FILE"
+                shift 2
+                ;;
+            --base-version)
+                update_config_value "BASE_VERSION" "$2"
+                source "$CONFIG_FILE"
+                shift 2
+                ;;
+            --iteration)
+                update_config_value "START_ITERATION_VERSION" "$2"
+                source "$CONFIG_FILE"
+                shift 2
+                ;;
+            *)
+                print_error "Невідома опція: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    # Check if config exists (only if not creating new config)
+    if [ ! -f "$CONFIG_FILE" ]; then
+        print_error "Конфігураційний файл не знайдено!"
+        print_status "Створіть його командою: $0 --init"
+        print_status "Після створення відредагуйте файл: $CONFIG_FILE"
+        exit 1
+    fi
+    
+    # Load config
+    source "$CONFIG_FILE"
+    
+    # Validate required config values
+    if [ -z "$UNITY_EDITOR_PATH" ] || [ -z "$BUILD_PATH" ] || [ -z "$OUTPUT_PATH" ] || [ -z "$BUILD_NAME" ] || [ -z "$BASE_VERSION" ]; then
+        print_error "Не всі необхідні параметри налаштовано в конфігу!"
+        print_status "Відредагуйте файл: $CONFIG_FILE"
+        print_status "Необхідно заповнити наступні параметри:"
+        [ -z "$UNITY_EDITOR_PATH" ] && print_status "- UNITY_EDITOR_PATH"
+        [ -z "$BUILD_PATH" ] && print_status "- BUILD_PATH"
+        [ -z "$OUTPUT_PATH" ] && print_status "- OUTPUT_PATH"
+        [ -z "$BUILD_NAME" ] && print_status "- BUILD_NAME"
+        [ -z "$BASE_VERSION" ] && print_status "- BASE_VERSION"
+        exit 1
+    fi
+    
+    print_status "Запуск скрипта створення Unity WebGL білду"
+    print_status "Версія Unity: 6000.0.25f1"
+    
+    # check prerequisites
+    check_unity_editor
+    check_project
+    
+    # check Player Settings
+    check_player_settings
+    
+    # show Player Settings info if requested
+    if [ "$settings_flag" = true ]; then
+        show_player_settings_info
+        exit 0
+    fi
+    
+    # create output directory
+    create_output_dir
+    
+    # clean previous build if requested
+    if [ "$clean_build_flag" = true ]; then
+        clean_build
+    fi
+    
+    # build WebGL
+    build_webgl
+    
+    print_success "Скрипт завершено успішно!"
+}
+
+# run main function with all arguments
+main "$@"
