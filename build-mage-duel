@@ -58,10 +58,12 @@ DEF_OUTPUT_PATH="~/Builds"
 DEF_BUILD_NAME="mageduel-webgl"
 DEF_BASE_VERSION="1.0"
 DEF_START_ITERATION_VERSION=1
+DEF_DEPLOYMENT_REPOSITORY_PATH=""
+DEF_DEPLOYMENT_REPOSITORY_BRANCH="main"
 
 # Load config if exists
 if [ -f "$CONFIG_FILE" ]; then
-    print_status "Завантажую конфігурацію з $CONFIG_FILE"
+    print_status "Loading configuration from $CONFIG_FILE"
     source "$CONFIG_FILE"
     
     # Override defaults with config values if they exist
@@ -71,6 +73,8 @@ if [ -f "$CONFIG_FILE" ]; then
     DEF_BUILD_NAME="${BUILD_NAME:-$DEF_BUILD_NAME}"
     BASE_VERSION="${BASE_VERSION:-$DEF_BASE_VERSION}"
     START_ITERATION_VERSION="${START_ITERATION_VERSION:-$DEF_START_ITERATION_VERSION}"
+    DEF_DEPLOYMENT_REPOSITORY_PATH="${DEPLOYMENT_REPOSITORY_PATH:-$DEF_DEPLOYMENT_REPOSITORY_PATH}"
+    DEF_DEPLOYMENT_REPOSITORY_BRANCH="${DEPLOYMENT_REPOSITORY_BRANCH:-$DEF_DEPLOYMENT_REPOSITORY_BRANCH}"
 else
     print_warning "Config file not found at path: $CONFIG_FILE"
     print_warning "Using default values"
@@ -143,7 +147,8 @@ build_webgl() {
     
     print_status "Starting WebGL build..."
     print_status "Project: $project_path"
-    print_status "Output directory:
+    print_status "Output directory: $full_output_path"
+    print_status "Build version: $current_version"
     
     # Unity command for WebGL build using Player Settings
     "$unity_path" \
@@ -168,7 +173,7 @@ build_webgl() {
             print_success "WebGL files created successfully"
             # Update version only if build was successful and files exist
             update_version_in_config
-
+            
             # Send success notification
             notify-send -u normal "Build Mage Duel" "Build $current_version successfully created!\nPath: $full_output_path"
             
@@ -183,7 +188,7 @@ build_webgl() {
             notify-send -u critical "Build Mage Duel" "Error: WebGL files not found.\nCheck Player Settings"
         fi
     else
-        print_error "Error creating build (exit code: $exit_code)"
+        print_error "Error creating build [exit code: $exit_code]"
         print_error "Check build log: $output_path/build.log"
         notify-send -u critical "Build Mage Duel" "Error creating build!\nExit code: $exit_code\nLog: $output_path/build.log"
         exit $exit_code
@@ -200,6 +205,8 @@ show_config() {
     echo "BUILD_NAME=\"$DEF_BUILD_NAME\""
     echo "BASE_VERSION=\"$BASE_VERSION\""
     echo "START_ITERATION_VERSION=$START_ITERATION_VERSION"
+    echo "DEPLOYMENT_REPOSITORY_PATH=\"$DEF_DEPLOYMENT_REPOSITORY_PATH\""
+    echo "DEPLOYMENT_REPOSITORY_BRANCH=\"$DEF_DEPLOYMENT_REPOSITORY_BRANCH\""
     echo "--------------------"
 }
 
@@ -230,6 +237,10 @@ BUILD_NAME=""
 # Version info
 BASE_VERSION=""
 START_ITERATION_VERSION=1
+
+# Deployment repository
+DEPLOYMENT_REPOSITORY_PATH=""
+DEPLOYMENT_REPOSITORY_BRANCH="main"
 EOL
     
     chmod 644 "$CONFIG_FILE"
@@ -241,6 +252,7 @@ EOL
     print_status "OUTPUT_PATH=\"~/Builds\""
     print_status "BUILD_NAME=\"mageduel-webgl\""
     print_status "BASE_VERSION=\"1.4\""
+    print_status "DEPLOYMENT_REPOSITORY_PATH=\"~/deployment-repo\""
 }
 
 # function to show usage
@@ -251,6 +263,7 @@ show_usage() {
     echo "  -h, --help              Show this help message"
     echo "  --show-config           Show current configuration"
     echo "  --init                  Create initial config file"
+    echo "  --deploy <branch>       Deploy build to repository (branch: main or test)"
     echo ""
     echo "Configuration options:"
     echo "  --unity-path <path>     Set Unity Editor path"
@@ -263,9 +276,165 @@ show_usage() {
     echo "Note: Before first use, create config with '$0 --init'"
 }
 
+# function to deploy build
+deploy_build() {
+    local build_path="$1"
+    local current_version="$2"
+    local deploy_path=$(eval echo "$DEF_DEPLOYMENT_REPOSITORY_PATH")
+    local deploy_branch=$DEF_DEPLOYMENT_REPOSITORY_BRANCH
+
+    print_status "Starting deployment process..."
+    print_status "Build path: $build_path"
+    print_status "Current version: $current_version"
+    print_status "Deploy path: $deploy_path"
+    print_status "Deploy branch: $deploy_branch"
+
+    if [ -z "$deploy_path" ]; then
+        print_error "Deployment repository path is not configured"
+        exit 1
+    fi
+
+    if [ ! -d "$deploy_path" ]; then
+        print_error "Deployment repository not found at path: $deploy_path"
+        exit 1
+    fi
+
+    # List contents of build directory
+    print_status "Listing build directory contents:"
+    ls -la "$build_path"
+
+    # Check if build directories exist in the generated build
+    print_status "Checking for Build directory at: $build_path/Build"
+    if [ ! -d "$build_path/Build" ]; then
+        print_error "Build directory not found at path: $build_path/Build"
+        print_error "Current working directory: $(pwd)"
+        print_error "Build path contents:"
+        ls -la "$build_path"
+        exit 1
+    fi
+
+    print_status "Checking for StreamingAssets directory at: $build_path/StreamingAssets"
+    if [ ! -d "$build_path/StreamingAssets" ]; then
+        print_error "StreamingAssets directory not found at path: $build_path/StreamingAssets"
+        print_error "Current working directory: $(pwd)"
+        print_error "Build path contents:"
+        ls -la "$build_path"
+        exit 1
+    fi
+
+    print_status "Deploying build to repository: $deploy_path"
+    print_status "Using branch: $deploy_branch"
+    print_status "Source build path: $build_path"
+
+    # Navigate to deployment repository
+    print_status "Changing directory to: $deploy_path"
+    cd "$deploy_path"
+    print_status "Current working directory: $(pwd)"
+
+    # Make sure we're on the right branch
+    print_status "Checking out branch: $deploy_branch"
+    git checkout "$deploy_branch"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to checkout branch: $deploy_branch"
+        exit 1
+    fi
+
+    # Create public directory if it doesn't exist
+    print_status "Checking/creating public directory..."
+    if [ ! -d "public" ]; then
+        print_status "Creating public directory"
+        mkdir -p public
+    fi
+
+    # Remove existing Build and StreamingAssets directories from public
+    print_status "Removing old build files from public/..."
+    rm -rf public/Build public/StreamingAssets
+    if [ $? -ne 0 ]; then
+        print_error "Failed to remove existing directories"
+        print_error "Current working directory: $(pwd)"
+        exit 1
+    fi
+
+    # Copy new Build and StreamingAssets directories to public
+    print_status "Copying Build directory from $build_path/Build to public/"
+    cp -r "$build_path/Build" public/
+    if [ $? -ne 0 ]; then
+        print_error "Failed to copy Build directory"
+        print_error "Current working directory: $(pwd)"
+        print_error "Source directory contents:"
+        ls -la "$build_path"
+        print_error "Destination directory contents:"
+        ls -la "public"
+        exit 1
+    fi
+
+    print_status "Copying StreamingAssets directory from $build_path/StreamingAssets to public/"
+    cp -r "$build_path/StreamingAssets" public/
+    if [ $? -ne 0 ]; then
+        print_error "Failed to copy StreamingAssets directory"
+        print_error "Current working directory: $(pwd)"
+        print_error "Source directory contents:"
+        ls -la "$build_path"
+        print_error "Destination directory contents:"
+        ls -la "public"
+        exit 1
+    fi
+
+    # Update version in version-checker.ts
+    print_status "Updating version in version-checker.ts to $current_version"
+    if [ -f "lib/version-checker.ts" ]; then
+        sed -i "s/export const GameVersion = \".*\"/export const GameVersion = \"$current_version\"/" lib/version-checker.ts
+        if [ $? -ne 0 ]; then
+            print_error "Failed to update version in version-checker.ts"
+            print_error "Current working directory: $(pwd)"
+            exit 1
+        fi
+    else
+        print_error "version-checker.ts not found at path: lib/version-checker.ts"
+        print_error "Current working directory: $(pwd)"
+        print_error "Directory contents:"
+        ls -la "lib"
+        exit 1
+    fi
+
+    # Commit and push changes
+    print_status "Adding files to git..."
+    git add public/Build public/StreamingAssets lib/version-checker.ts
+    if [ $? -ne 0 ]; then
+        print_error "Failed to add files to git"
+        print_error "Git status:"
+        git status
+        exit 1
+    fi
+
+    print_status "Committing changes..."
+    git commit -m "Deploy version $current_version"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to commit changes"
+        print_error "Git status:"
+        git status
+        exit 1
+    fi
+
+    print_status "Pushing to origin $deploy_branch..."
+    git push origin "$deploy_branch"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to push changes"
+        print_error "Git remote -v:"
+        git remote -v
+        exit 1
+    fi
+
+    print_success "Successfully deployed version $current_version to $deploy_branch"
+}
+
 # main script
 main() {
     local show_config_flag=false
+    local deploy_flag=false
+    local deploy_branch=""
+    local current_version=""
+    local full_output_path=""
     
     # parse command line arguments first
     while [[ $# -gt 0 ]]; do
@@ -284,6 +453,15 @@ main() {
             --show-config)
                 show_config_flag=true
                 shift
+                ;;
+            --deploy)
+                deploy_flag=true
+                if [ -z "$2" ] || [[ ! "$2" =~ ^(main|test)$ ]]; then
+                    print_error "Invalid or missing branch name. Use --deploy main or --deploy test"
+                    exit 1
+                fi
+                deploy_branch="$2"
+                shift 2
                 ;;
             --unity-path)
                 update_config_value "UNITY_EDITOR_PATH" "$2"
@@ -355,9 +533,25 @@ main() {
     
     # create output directory
     create_output_dir
+
+    # Set current version and output path
+    current_version="$BASE_VERSION.$START_ITERATION_VERSION"
+    full_output_path="$(eval echo $DEF_OUTPUT_PATH)/$DEF_BUILD_NAME-$current_version"
     
     # build WebGL
     build_webgl
+    
+    # Deploy if requested
+    if [ "$deploy_flag" = true ]; then
+        if [ -z "$DEF_DEPLOYMENT_REPOSITORY_PATH" ]; then
+            print_error "Deployment repository path is not configured"
+            print_status "Add DEPLOYMENT_REPOSITORY_PATH to your config file"
+            exit 1
+        fi
+        # Override branch from config with command line argument
+        DEF_DEPLOYMENT_REPOSITORY_BRANCH="$deploy_branch"
+        deploy_build "$full_output_path" "$current_version"
+    fi
     
     print_success "Script completed successfully!"
 }
